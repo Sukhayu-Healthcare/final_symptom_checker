@@ -1,3 +1,23 @@
+import logging
+from logging.handlers import RotatingFileHandler
+
+# ============================
+# Logging Configuration
+# ============================
+LOG_FILE = "app_logs.log"
+
+logger = logging.getLogger("SymptomCheckerLogger")
+logger.setLevel(logging.INFO)
+
+# Rotating log — keeps last 5 files, each max 1 MB
+handler = RotatingFileHandler(LOG_FILE, maxBytes=1_000_000, backupCount=5)
+formatter = logging.Formatter(
+    "%(asctime)s — %(levelname)s — %(message)s"
+)
+handler.setFormatter(formatter)
+logger.addHandler(handler)
+
+
 from __future__ import annotations
 
 import os
@@ -206,7 +226,11 @@ def analyze(req: AnalyzeRequest):
       - uses Gemini to classify into one of 15 diseases + triage zone
       - returns Marathi symptom + action lines
     """
+    logger.info(f"User Complaint: {req.complaint}")
     result = classify_with_gemini(req.complaint)
+    logger.info(f"AI Response Zone: {result['zone']}")
+    logger.info(f"Symptoms Line: {result['patient_symptoms_line']}")
+
 
     zone = result["zone"]
     zone_label = ZONE_LABELS.get(zone, f"Zone: {zone}")
