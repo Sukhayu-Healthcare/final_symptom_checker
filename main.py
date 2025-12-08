@@ -226,6 +226,7 @@ def analyze(req: AnalyzeRequest):
       - uses Gemini to classify into one of 15 diseases + triage zone
       - returns Marathi symptom + action lines
     """
+    print("bhavana")
     logger.info(f"User Complaint: {req.complaint}")
     result = classify_with_gemini(req.complaint)
     logger.info(f"AI Response Zone: {result['zone']}")
