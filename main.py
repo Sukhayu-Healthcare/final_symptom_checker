@@ -1,19 +1,42 @@
-
 from __future__ import annotations
 
 import os
 import json
 from typing import Dict
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from google import genai
 
+import logging
+from logging.handlers import RotatingFileHandler
+
 
 # =========================
-# 0) Gemini client setup
+# 0) Logging setup
+# =========================
+
+LOG_FILE = "app_logs.log"
+
+logger = logging.getLogger("symptom_checker")
+logger.setLevel(logging.INFO)
+
+# Avoid adding multiple handlers if file is reloaded
+if not logger.handlers:
+    file_handler = RotatingFileHandler(
+        LOG_FILE, maxBytes=1_000_000, backupCount=5
+    )
+    formatter = logging.Formatter(
+        "%(asctime)s - %(levelname)s - %(message)s"
+    )
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
+
+
+# =========================
+# 1) Gemini client setup
 # =========================
 
 load_dotenv()  # loads GEMINI_API_KEY from .env if present
@@ -26,12 +49,11 @@ if not GEMINI_API_KEY:
     )
 
 gemini_client = genai.Client(api_key=GEMINI_API_KEY)
-
 GEMINI_MODEL_NAME = "gemini-2.5-flash"  # lightweight model, good for JSON
 
 
 # =========================
-# 1) Disease list (15 diseases)
+# 2) Disease list (15 diseases)
 # =========================
 
 DISEASES = [
@@ -62,7 +84,7 @@ ZONE_LABELS = {
 
 
 # =========================
-# 2) Gemini-based classifier
+# 3) Gemini-based classifier
 # =========================
 
 def classify_with_gemini(text: str) -> Dict:
@@ -72,6 +94,8 @@ def classify_with_gemini(text: str) -> Dict:
       - Choose ONE zone from [Red, Orange, Yellow]
       - Generate Marathi symptom & action lines
     """
+
+    logger.info(f"Incoming complaint: {text}")
 
     system_instructions = f"""
 You are an AI symptom checker triage assistant.
@@ -137,7 +161,7 @@ PATIENT COMPLAINT (Marathi):
         )
         raw_text = response.text.strip()
     except Exception as e:
-        print("Gemini API error:", e)
+        logger.error(f"Gemini API error: {e}")
         raise RuntimeError("Gemini call failed") from e
 
     # Try to parse JSON
@@ -150,6 +174,7 @@ PATIENT COMPLAINT (Marathi):
     # Validate keys
     for key in ["disease", "zone", "symptoms_line", "action_line"]:
         if key not in data:
+            logger.error(f"Missing key in Gemini response: {key}")
             raise RuntimeError(f"Missing key in Gemini response: {key}")
 
     # Safety clamp: make sure disease & zone are valid
@@ -157,11 +182,14 @@ PATIENT COMPLAINT (Marathi):
     zone = data["zone"]
 
     if disease not in DISEASES:
-        # Fallback if hallucinated disease name
+        logger.warning(f"Gemini returned unknown disease '{disease}', falling back.")
         disease = "Viral Fever (without warning signs)"
 
     if zone not in ALLOWED_ZONES:
+        logger.warning(f"Gemini returned unknown zone '{zone}', falling back to Yellow.")
         zone = "Yellow"
+
+    logger.info(f"Classified disease: {disease}, zone: {zone}")
 
     return {
         "disease": disease,
@@ -172,7 +200,7 @@ PATIENT COMPLAINT (Marathi):
 
 
 # =========================
-# 3) FastAPI app & models
+# 4) FastAPI app & models
 # =========================
 
 app = FastAPI(title="AI Symptom Checker - 15 Diseases (Gemini)")
@@ -207,10 +235,25 @@ def analyze(req: AnalyzeRequest):
       - uses Gemini to classify into one of 15 diseases + triage zone
       - returns Marathi symptom + action lines
     """
-    print("bhavana")
+    logger.info(f"/analyze called with complaint: {req.complaint}")
+
+    try:
+        result = classify_with_gemini(req.complaint)
+    except RuntimeError as e:
+        logger.error(f"Error in classify_with_gemini: {e}")
+        # nicer error for client instead of 500 with stack trace
+        raise HTTPException(
+            status_code=503,
+            detail="AI सेवा तात्पुरती उपलब्ध नाही. कृपया काही वेळाने पुन्हा प्रयत्न करा.",
+        )
 
     zone = result["zone"]
     zone_label = ZONE_LABELS.get(zone, f"Zone: {zone}")
+
+    logger.info(
+        f"Triage result -> zone: {zone}, disease: {result['disease']}, "
+        f"symptoms_line: {result['symptoms_line']}"
+    )
 
     return AnalyzeResponse(
         zone=zone,
@@ -219,3 +262,4 @@ def analyze(req: AnalyzeRequest):
         patient_symptoms_line=result["symptoms_line"],
         patient_action_line=result["action_line"],
     )
+
